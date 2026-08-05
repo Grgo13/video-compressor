@@ -90,18 +90,13 @@
 
   </main>
 
-  <!-- FFmpeg.wasm v0.12.x 用スクリプト (本体とUtil) -->
+  <!-- FFmpeg.wasm 本体のみ読み込み (util.jsはエラーの原因になるため破棄) -->
   <script src="https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/umd/ffmpeg.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@ffmpeg/util@0.12.1/dist/umd/util.js"></script>
 
   <script>
-    const { FFmpeg } = FFmpegWASM;
-    const { fetchFile, toBlobURL } = FFmpegUtil;
-    
-    let ffmpeg = null;
-    let selectedFile = null;
-    let currentObjectUrl = null;
-
+    // ==========================================
+    // 1. UI・イベント処理（エラーで止まらないよう最優先で実行）
+    // ==========================================
     const dropZone = document.getElementById('drop-zone');
     const fileInput = document.getElementById('file-input');
     const settingsSection = document.getElementById('settings-section');
@@ -119,15 +114,24 @@
     const outputVideo = document.getElementById('output-video');
     const downloadBtn = document.getElementById('download-btn');
 
+    let selectedFile = null;
+    let currentObjectUrl = null;
+    let ffmpegInstance = null;
+
+    // スライダー更新
     crfSlider.addEventListener('input', (e) => {
       const val = e.target.value;
       crfValue.textContent = `CRF ${val} ${val == 28 ? '(標準)' : ''}`;
     });
 
+    // クリック・ドラッグ＆ドロップ処理
     dropZone.addEventListener('click', () => fileInput.click());
     
     ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
-      dropZone.addEventListener(eventName, e => { e.preventDefault(); e.stopPropagation(); }, false);
+      dropZone.addEventListener(eventName, e => {
+        e.preventDefault();
+        e.stopPropagation();
+      }, false);
     });
 
     dropZone.addEventListener('dragover', () => dropZone.classList.add('border-zinc-400', 'bg-zinc-800/80'));
@@ -142,6 +146,7 @@
       if (e.target.files?.length > 0) handleFileSelect(e.target.files[0]);
     });
 
+    // ファイル選択時のUI切り替え
     function handleFileSelect(file) {
       if (!file.type.startsWith('video/')) {
         alert('動画ファイルを選択してください。');
@@ -160,10 +165,34 @@
       }
     }
 
-    async function loadFFmpeg() {
-      if (ffmpeg) return;
 
-      ffmpeg = new FFmpeg();
+    // ==========================================
+    // 2. 内部ユーティリティ（外部ライブラリに頼らない独自実装）
+    // ==========================================
+    async function createBlobUrlFromFetch(url, mimeType) {
+      const response = await fetch(url);
+      if (!response.ok) throw new Error(`Fetch failed: ${url}`);
+      const blob = await response.blob();
+      return URL.createObjectURL(new Blob([blob], { type: mimeType }));
+    }
+
+    async function fileToUint8Array(file) {
+      const buffer = await file.arrayBuffer();
+      return new Uint8Array(buffer);
+    }
+
+
+    // ==========================================
+    // 3. FFmpegコア処理
+    // ==========================================
+    async function initFFmpeg() {
+      if (ffmpegInstance) return ffmpegInstance;
+      
+      if (typeof FFmpegWASM === 'undefined') {
+        throw new Error('FFmpegライブラリが読み込めませんでした。通信環境を確認してください。');
+      }
+
+      const ffmpeg = new FFmpegWASM.FFmpeg();
       
       ffmpeg.on('progress', ({ progress }) => {
         const percent = Math.max(0, Math.min(Math.round(progress * 100), 100));
@@ -171,23 +200,26 @@
         progressBar.style.width = `${percent}%`;
       });
 
-      statusText.textContent = 'エンジンをロード中...';
-      
-      // SharedArrayBufferを回避するためのシングルスレッド版 (core-st) を明示指定
+      // SharedArrayBuffer制限を回避するため「シングルスレッド(core-st)」を使用
       const baseURL = 'https://cdn.jsdelivr.net/npm/@ffmpeg/core-st@0.12.6/dist/umd';
       const ffmpegURL = 'https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/umd';
 
-      // CORSエラー回避のため toBlobURL を経由させる
+      statusText.textContent = '初期化エンジンをダウンロード中...';
+      
       await ffmpeg.load({
-        coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
-        wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
-        classWorkerURL: await toBlobURL(`${ffmpegURL}/814.ffmpeg.js`, 'text/javascript')
+        coreURL: await createBlobUrlFromFetch(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
+        wasmURL: await createBlobUrlFromFetch(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
+        classWorkerURL: await createBlobUrlFromFetch(`${ffmpegURL}/814.ffmpeg.js`, 'text/javascript')
       });
+
+      ffmpegInstance = ffmpeg;
+      return ffmpeg;
     }
 
     compressBtn.addEventListener('click', async () => {
       if (!selectedFile) return;
 
+      // ボタンの連打防止
       compressBtn.disabled = true;
       compressBtn.classList.add('opacity-50', 'pointer-events-none');
       settingsSection.classList.add('opacity-50', 'pointer-events-none');
@@ -200,12 +232,13 @@
       const outputName = 'output.mp4';
 
       try {
-        await loadFFmpeg();
+        const ffmpeg = await initFFmpeg();
 
-        statusText.textContent = 'メモリにファイルを展開中...';
-        await ffmpeg.writeFile(inputName, await fetchFile(selectedFile));
+        statusText.textContent = '動画を読み込み中...';
+        const fileData = await fileToUint8Array(selectedFile);
+        await ffmpeg.writeFile(inputName, fileData);
 
-        statusText.textContent = 'エンコード処理中...';
+        statusText.textContent = '圧縮処理を実行中...';
         
         const args = ['-i', inputName];
         
@@ -224,7 +257,7 @@
 
         await ffmpeg.exec(args);
 
-        statusText.textContent = 'ファイルの生成中...';
+        statusText.textContent = 'プレビューを作成中...';
         const data = await ffmpeg.readFile(outputName);
         
         const blob = new Blob([data.buffer], { type: 'video/mp4' });
@@ -242,19 +275,23 @@
         resultSize.textContent = `${oldSizeMB} MB ➔ ${newSizeMB} MB`;
 
         resultSection.classList.remove('hidden');
-        statusText.textContent = '処理が完了しました';
+        statusText.textContent = '圧縮が完了しました';
 
       } catch (error) {
-        console.error('Compression Error:', error);
-        alert(`処理中にエラーが発生しました。\n詳細: ${error.message || error}`);
+        console.error('エラー詳細:', error);
+        alert(`圧縮中にエラーが発生しました。\n${error.message}`);
         statusText.textContent = 'エラーが発生しました';
       } finally {
-        try { await ffmpeg.deleteFile(inputName); } catch (e) {}
-        try { await ffmpeg.deleteFile(outputName); } catch (e) {}
-        
+        // UIのロック解除
         compressBtn.disabled = false;
         compressBtn.classList.remove('opacity-50', 'pointer-events-none');
         settingsSection.classList.remove('opacity-50', 'pointer-events-none');
+        
+        // 仮想ファイルの削除（メモリ解放）
+        if (ffmpegInstance) {
+          try { await ffmpegInstance.deleteFile(inputName); } catch (e) {}
+          try { await ffmpegInstance.deleteFile(outputName); } catch (e) {}
+        }
       }
     });
   </script>
