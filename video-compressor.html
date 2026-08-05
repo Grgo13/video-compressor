@@ -181,11 +181,23 @@
 
       statusText.textContent = 'エンジンを読み込み中...';
 
-      // 同一オリジンの /ffmpeg フォルダから読み込むことでCORS/Workerエラーを完全回避
+      // document.baseURIを基準に絶対URLを作成
+      const ffmpegDirectory = new URL('./ffmpeg/', document.baseURI);
+
+      const classWorkerURL = new URL('814.ffmpeg.js', ffmpegDirectory).href;
+      const coreURL = new URL('ffmpeg-core.js', ffmpegDirectory).href;
+      const wasmURL = new URL('ffmpeg-core.wasm', ffmpegDirectory).href;
+
+      console.log({
+        classWorkerURL,
+        coreURL,
+        wasmURL
+      });
+
       await ffmpeg.load({
-        classWorkerURL: './ffmpeg/814.ffmpeg.js',
-        coreURL: './ffmpeg/ffmpeg-core.js',
-        wasmURL: './ffmpeg/ffmpeg-core.wasm'
+        classWorkerURL,
+        coreURL,
+        wasmURL
       });
     }
 
