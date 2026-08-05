@@ -179,26 +179,46 @@
         console.log('[FFmpeg]', message);
       });
 
-      statusText.textContent = 'エンジンを読み込み中...';
+      statusText.textContent = 'ファイルのパスを解決中...';
 
-      // document.baseURIを基準に絶対URLを作成
-      const ffmpegDirectory = new URL('./ffmpeg/', document.baseURI);
+      // 現在のHTMLの場所を基準に、確実な絶対URLを生成する
+      let basePath = window.location.href.split('?')[0].split('#')[0];
+      basePath = basePath.substring(0, basePath.lastIndexOf('/') + 1);
 
-      const classWorkerURL = new URL('814.ffmpeg.js', ffmpegDirectory).href;
-      const coreURL = new URL('ffmpeg-core.js', ffmpegDirectory).href;
-      const wasmURL = new URL('ffmpeg-core.wasm', ffmpegDirectory).href;
+      const classWorkerURL = basePath + 'ffmpeg/814.ffmpeg.js';
+      const coreURL = basePath + 'ffmpeg/ffmpeg-core.js';
+      const wasmURL = basePath + 'ffmpeg/ffmpeg-core.wasm';
 
-      console.log({
+      console.log('--- 読み込みURL確認 ---', { classWorkerURL, coreURL, wasmURL });
+
+      statusText.textContent = 'ファイルの存在を確認中...';
+
+      // 【事前チェック】ファイルが確実に存在するか確認（404なら即エラーを出してフリーズを防ぐ）
+      try {
+        for (const url of [classWorkerURL, coreURL, wasmURL]) {
+          const res = await fetch(url, { method: 'HEAD' });
+          if (!res.ok) {
+            throw new Error(`ファイルが見つかりません (HTTP ${res.status}): \n${url}`);
+          }
+        }
+      } catch (e) {
+        throw new Error(`事前チェック失敗: ${e.message}\n\nGitHub Pagesにファイルが正しく配置されているか確認してください。`);
+      }
+
+      statusText.textContent = 'エンジンを読み込み中... (しばらくお待ちください)';
+
+      // ロード実行（30秒でタイムアウトさせる）
+      const loadPromise = ffmpeg.load({
         classWorkerURL,
         coreURL,
         wasmURL
       });
 
-      await ffmpeg.load({
-        classWorkerURL,
-        coreURL,
-        wasmURL
-      });
+      const timeoutPromise = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("エンジンのロードがタイムアウトしました。Wasmファイルの読み込みに失敗している可能性があります。")), 30000)
+      );
+
+      await Promise.race([loadPromise, timeoutPromise]);
     }
 
     compressBtn.addEventListener('click', async () => {
