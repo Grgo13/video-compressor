@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>動画圧縮ツール | Video Compressor</title>
+  <!-- Tailwind CSS (CDN) -->
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-zinc-950 text-zinc-100 min-h-screen flex flex-col items-center justify-center p-4 selection:bg-zinc-800 selection:text-zinc-100">
+
+  <main class="w-full max-w-xl bg-zinc-900 border border-zinc-800 rounded-2xl p-6 shadow-2xl space-y-6">
+    
+    <!-- ヘッダー -->
+    <header class="text-center space-y-1">
+      <h1 class="text-2xl font-semibold tracking-tight text-zinc-100">動画圧縮ツール</h1>
+      <p class="text-xs text-zinc-400">端末内（ブラウザ）で安全に処理されます。サーバーへのファイル送信はありません。</p>
+    </header>
+
+    <!-- ドラッグ＆ドロップエリア -->
+    <section 
+      id="drop-zone" 
+      class="border-2 border-dashed border-zinc-700 hover:border-zinc-400 bg-zinc-900/50 hover:bg-zinc-800/50 transition-all rounded-xl p-8 text-center cursor-pointer flex flex-col items-center justify-center space-y-3"
+    >
+      <svg class="w-10 h-10 text-zinc-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M7 16a4 4 0 01-.88-7.903A5 5 0 0115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path>
+      </svg>
+      <div>
+        <p class="text-sm font-medium text-zinc-200">動画ファイルをドラッグ＆ドロップ</p>
+        <p class="text-xs text-zinc-500 mt-1">またはクリックしてファイルを選択</p>
+      </div>
+      <input type="file" id="file-input" accept="video/*" class="hidden" />
+    </section>
+
+    <!-- 圧縮設定エリア（ファイル投入後に表示） -->
+    <section id="settings-section" class="hidden space-y-5 border-t border-zinc-800 pt-5">
+      <!-- ファイル情報 -->
+      <div class="flex items-center justify-between text-xs bg-zinc-950 p-3 rounded-lg border border-zinc-800">
+        <span class="text-zinc-400">選択中ファイル</span>
+        <span id="file-info" class="font-mono text-zinc-200 truncate max-w-[280px]"></span>
+      </div>
+
+      <!-- 解像度設定 -->
+      <div class="space-y-1.5">
+        <label for="resolution-select" class="block text-xs font-medium text-zinc-300">
+          解像度（サイズ変更）
+        </label>
+        <select 
+          id="resolution-select" 
+          class="w-full bg-zinc-950 border border-zinc-800 text-zinc-200 text-xs rounded-lg p-2.5 focus:outline-none focus:border-zinc-500"
+        >
+          <option value="original">元の解像度を維持</option>
+          <option value="1080">Full HD (1080p に縮小)</option>
+          <option value="720">HD (720p に縮小)</option>
+          <option value="480">SD (480p に縮小)</option>
+        </select>
+      </div>
+
+      <!-- 画質（CRF）スライダー -->
+      <div class="space-y-2">
+        <div class="flex justify-between items-center text-xs">
+          <label for="crf-slider" class="font-medium text-zinc-300">
+            圧縮度（画質調整）
+          </label>
+          <span id="crf-value" class="font-mono text-zinc-100 font-semibold bg-zinc-800 px-2 py-0.5 rounded text-[11px]">CRF 28 (標準)</span>
+        </div>
+        <input 
+          type="range" 
+          id="crf-slider" 
+          min="18" 
+          max="36" 
+          value="28" 
+          class="w-full h-1.5 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-zinc-100"
+        >
+        <div class="flex justify-between text-[10px] text-zinc-500 font-mono">
+          <span>高画質 (ファイル大)</span>
+          <span>高圧縮 (ファイル小)</span>
+        </div>
+      </div>
+
+      <!-- 圧縮開始ボタン -->
+      <button 
+        id="compress-btn" 
+        class="w-full py-3 bg-zinc-100 hover:bg-white text-zinc-900 font-semibold text-xs rounded-xl shadow transition-colors flex items-center justify-center space-x-2 cursor-pointer"
+      >
+        <span>この設定で動画を圧縮する</span>
+      </button>
+    </section>
+
+    <!-- プログレスバー & ステータス表示 -->
+    <section id="progress-section" class="hidden space-y-2 border-t border-zinc-800 pt-5">
+      <div class="flex justify-between text-xs">
+        <span id="status-text" class="text-zinc-400 font-medium">圧縮中...</span>
+        <span id="progress-percent" class="font-mono text-zinc-200 font-semibold">0%</span>
+      </div>
+      <div class="w-full bg-zinc-800 h-2 rounded-full overflow-hidden">
+        <div id="progress-bar" class="bg-zinc-100 h-2 rounded-full w-0 transition-all duration-200"></div>
+      </div>
+    </section>
+
+    <!-- 圧縮完了・結果プレビュー表示 -->
+    <section id="result-section" class="hidden space-y-4 border-t border-zinc-800 pt-5">
+      <div class="flex items-center justify-between">
+        <span class="text-xs font-medium text-zinc-200">圧縮完了</span>
+        <span id="result-size" class="text-xs font-mono text-zinc-400"></span>
+      </div>
+
+      <!-- 動画プレビュー -->
+      <video id="output-video" controls class="w-full rounded-xl border border-zinc-800 bg-black max-h-[300px]"></video>
+
+      <!-- ダウンロードボタン -->
+      <a 
+        id="download-btn" 
+        download="compressed.mp4" 
+        class="block w-full py-3 bg-zinc-100 hover:bg-white text-zinc-900 font-semibold text-center text-xs rounded-xl shadow transition-colors cursor-pointer"
+      >
+        圧縮された動画をダウンロード
+      </a>
+    </section>
+
+  </main>
+
+  <!-- FFmpeg.wasm 0.12.x CDN -->
+  <script src="https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/umd/ffmpeg.js"></script>
+  <script src="https://unpkg.com/@ffmpeg/util@0.12.1/dist/umd/util.js"></script>
+
+  <script>
+    const { FFmpeg } = FFmpegWASM;
+    const { fetchFile, toBlobURL } = FFmpegUtil;
+
+    let ffmpeg = null;
+    let selectedFile = null;
+
+    // DOM要素の取得
+    const dropZone = document.getElementById('drop-zone');
+    const fileInput = document.getElementById('file-input');
+    const settingsSection = document.getElementById('settings-section');
+    const fileInfo = document.getElementById('file-info');
+    const resolutionSelect = document.getElementById('resolution-select');
+    const crfSlider = document.getElementById('crf-slider');
+    const crfValue = document.getElementById('crf-value');
+    const compressBtn = document.getElementById('compress-btn');
+    const progressSection = document.getElementById('progress-section');
+    const statusText = document.getElementById('status-text');
+    const progressPercent = document.getElementById('progress-percent');
+    const progressBar = document.getElementById('progress-bar');
+    const resultSection = document.getElementById('result-section');
+    const resultSize = document.getElementById('result-size');
+    const outputVideo = document.getElementById('output-video');
+    const downloadBtn = document.getElementById('download-btn');
+
+    // CRFスライダー値のラベル更新
+    crfSlider.addEventListener('input', (e) => {
+      const val = e.target.value;
+      let label = `CRF ${val}`;
+      if (val == 28) label += ' (標準)';
+      crfValue.textContent = label;
+    });
+
+    // ドラッグ＆ドロップ関連イベント
+    dropZone.addEventListener('click', () => fileInput.click());
+    dropZone.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      dropZone.classList.add('border-zinc-400', 'bg-zinc-800/80');
+    });
+    dropZone.addEventListener('dragleave', () => {
+      dropZone.classList.remove('border-zinc-400', 'bg-zinc-800/80');
+    });
+    dropZone.addEventListener('drop', (e) => {
+      e.preventDefault();
+      dropZone.classList.remove('border-zinc-400', 'bg-zinc-800/80');
+      if (e.dataTransfer.files.length > 0) {
+        handleFileSelect(e.dataTransfer.files[0]);
+      }
+    });
+    fileInput.addEventListener('change', (e) => {
+      if (e.target.files.length > 0) {
+        handleFileSelect(e.target.files[0]);
+      }
+    });
+
+    // ファイル選択時の処理（ドロップ後に設定エリアを表示）
+    function handleFileSelect(file) {
+      if (!file.type.startsWith('video/')) {
+        alert('動画ファイル（MP4, MOV等）を選択してください。');
+        return;
+      }
+      selectedFile = file;
+      fileInfo.textContent = `${file.name} (${(file.size / (1024 * 1024)).toFixed(2)} MB)`;
+      
+      // UIの切り替え
+      settingsSection.classList.remove('hidden');
+      resultSection.classList.add('hidden');
+      progressSection.classList.add('hidden');
+    }
+
+    // FFmpegエンジン初期化
+    async function loadFFmpeg() {
+      if (ffmpeg) return;
+      ffmpeg = new FFmpeg();
+
+      ffmpeg.on('progress', ({ progress }) => {
+        const percent = Math.min(Math.round(progress * 100), 100);
+        progressPercent.textContent = `${percent}%`;
+        progressBar.style.width = `${percent}%`;
+      });
+
+      statusText.textContent = '圧縮エンジンを準備中...';
+      const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd';
+      await ffmpeg.load({
+        coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
+        wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
+      });
+    }
+
+    // 圧縮実行メイン処理
+    compressBtn.addEventListener('click', async () => {
+      if (!selectedFile) return;
+
+      // 処理中のUI表示
+      compressBtn.disabled = true;
+      compressBtn.classList.add('opacity-50', 'cursor-not-allowed');
+      progressSection.classList.remove('hidden');
+      resultSection.classList.add('hidden');
+      progressBar.style.width = '0%';
+      progressPercent.textContent = '0%';
+
+      try {
+        await loadFFmpeg();
+
+        statusText.textContent = 'ファイルを読み込んでいます...';
+        const inputName = 'input_video';
+        const outputName = 'output_video.mp4';
+
+        await ffmpeg.writeFile(inputName, await fetchFile(selectedFile));
+
+        statusText.textContent = '圧縮中...';
+        
+        // コマンド生成
+        const args = ['-i', inputName];
+
+        // 解像度の設定フィルタ
+        const res = resolutionSelect.value;
+        if (res !== 'original') {
+          args.push('-vf', `scale=-2:${res}`); // アスペクト比を維持しつつ縦サイズを変更
+        }
+
+        // 画質・コーデック設定
+        args.push(
+          '-vcodec', 'libx264',
+          '-crf', crfSlider.value,
+          '-preset', 'ultrafast',
+          '-acodec', 'aac',
+          outputName
+        );
+
+        // FFmpeg実行
+        await ffmpeg.exec(args);
+
+        statusText.textContent = '出力を生成中...';
+        const data = await ffmpeg.readFile(outputName);
+        const blob = new Blob([data.buffer], { type: 'video/mp4' });
+        const url = URL.createObjectURL(blob);
+
+        // 結果の反映
+        outputVideo.src = url;
+        downloadBtn.href = url;
+        downloadBtn.download = `compressed_${selectedFile.name.split('.')[0]}.mp4`;
+        
+        const newSizeMB = (blob.size / (1024 * 1024)).toFixed(2);
+        resultSize.textContent = `サイズ: ${newSizeMB} MB`;
+
+        resultSection.classList.remove('hidden');
+        statusText.textContent = '完了';
+
+        // 後片付け
+        await ffmpeg.deleteFile(inputName);
+        await ffmpeg.deleteFile(outputName);
+
+      } catch (error) {
+        console.error(error);
+        alert('圧縮中にエラーが発生しました。');
+        statusText.textContent = 'エラーが発生しました';
+      } finally {
+        compressBtn.disabled = false;
+        compressBtn.classList.remove('opacity-50', 'cursor-not-allowed');
+      }
+    });
+  </script>
+</body>
+</html>
