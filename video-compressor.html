@@ -32,7 +32,7 @@
       <input type="file" id="file-input" accept="video/*" class="hidden" />
     </section>
 
-    <!-- 圧縮設定エリア（ファイル投入後に表示） -->
+    <!-- 圧縮設定エリア -->
     <section id="settings-section" class="hidden space-y-5 border-t border-zinc-800 pt-5">
       <!-- ファイル情報 -->
       <div class="flex items-center justify-between text-xs bg-zinc-950 p-3 rounded-lg border border-zinc-800">
@@ -120,9 +120,8 @@
 
   </main>
 
-  <!-- FFmpeg.wasm 0.12.x CDN -->
+  <!-- FFmpeg.wasm 0.12.x CDN（FFmpeg本体のみ読み込み） -->
   <script src="https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/umd/ffmpeg.js"></script>
-  <script src="https://unpkg.com/@ffmpeg/util@0.12.1/dist/umd/util.js"></script>
 
   <script>
     let ffmpeg = null;
@@ -189,7 +188,6 @@
       }
     });
 
-    // ファイル選択時の処理（ドロップ後に設定エリアを表示）
     function handleFileSelect(file) {
       if (!file.type.startsWith('video/')) {
         alert('動画ファイル（MP4, MOV等）を選択してください。');
@@ -198,10 +196,22 @@
       selectedFile = file;
       fileInfo.textContent = `${file.name} (${(file.size / (1024 * 1024)).toFixed(2)} MB)`;
       
-      // UIの切り替え
       settingsSection.classList.remove('hidden');
       resultSection.classList.add('hidden');
       progressSection.classList.add('hidden');
+    }
+
+    // JS標準機能でBlobからUint8Arrayを取得（FFmpegUtil非依存）
+    async function fileToUint8Array(file) {
+      const arrayBuffer = await file.arrayBuffer();
+      return new Uint8Array(arrayBuffer);
+    }
+
+    // URL文字列からBlobURLを生成（FFmpegUtil非依存）
+    async function urlToBlobURL(url, mimeType) {
+      const res = await fetch(url);
+      const blob = await res.blob();
+      return URL.createObjectURL(new Blob([blob], { type: mimeType }));
     }
 
     // FFmpegエンジン初期化
@@ -213,8 +223,6 @@
       }
 
       const { FFmpeg } = FFmpegWASM;
-      const { toBlobURL } = FFmpegUtil;
-
       ffmpeg = new FFmpeg();
 
       ffmpeg.on('progress', ({ progress }) => {
@@ -225,17 +233,17 @@
 
       statusText.textContent = '圧縮エンジンを準備中...';
       const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd';
-      await ffmpeg.load({
-        coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
-        wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
-      });
+      
+      const coreURL = await urlToBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript');
+      const wasmURL = await urlToBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm');
+
+      await ffmpeg.load({ coreURL, wasmURL });
     }
 
     // 圧縮実行メイン処理
     compressBtn.addEventListener('click', async () => {
       if (!selectedFile) return;
 
-      // 処理中のUI表示
       compressBtn.disabled = true;
       compressBtn.classList.add('opacity-50', 'cursor-not-allowed');
       progressSection.classList.remove('hidden');
@@ -246,26 +254,22 @@
       try {
         await loadFFmpeg();
 
-        const { fetchFile } = FFmpegUtil;
-
         statusText.textContent = 'ファイルを読み込んでいます...';
         const inputName = 'input_video';
         const outputName = 'output_video.mp4';
 
-        await ffmpeg.writeFile(inputName, await fetchFile(selectedFile));
+        const fileData = await fileToUint8Array(selectedFile);
+        await ffmpeg.writeFile(inputName, fileData);
 
         statusText.textContent = '圧縮中...';
         
-        // コマンド生成
         const args = ['-i', inputName];
 
-        // 解像度の設定フィルタ
         const res = resolutionSelect.value;
         if (res !== 'original') {
           args.push('-vf', `scale=-2:${res}`);
         }
 
-        // 画質・コーデック設定
         args.push(
           '-vcodec', 'libx264',
           '-crf', crfSlider.value,
@@ -274,7 +278,6 @@
           outputName
         );
 
-        // FFmpeg実行
         await ffmpeg.exec(args);
 
         statusText.textContent = '出力を生成中...';
@@ -282,7 +285,6 @@
         const blob = new Blob([data.buffer], { type: 'video/mp4' });
         const url = URL.createObjectURL(blob);
 
-        // 結果の反映
         outputVideo.src = url;
         downloadBtn.href = url;
         downloadBtn.download = `compressed_${selectedFile.name.split('.')[0]}.mp4`;
@@ -293,7 +295,6 @@
         resultSection.classList.remove('hidden');
         statusText.textContent = '完了';
 
-        // 後片付け
         await ffmpeg.deleteFile(inputName);
         await ffmpeg.deleteFile(outputName);
 
