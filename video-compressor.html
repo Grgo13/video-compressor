@@ -89,15 +89,10 @@
 
   </main>
 
-  <!-- ご指定の v0.12.10 UMD を読み込み -->
-  <script src="https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/umd/ffmpeg.js"></script>
+  <!-- GitHubリポジトリ内に配置したFFmpeg本体を読み込む -->
+  <script src="./ffmpeg/ffmpeg.js"></script>
 
   <script>
-    // GitHub Pages環境での SharedArrayBuffer is not defined エラーを回避するポリフィル
-    if (typeof SharedArrayBuffer === 'undefined') {
-      window.SharedArrayBuffer = window.ArrayBuffer;
-    }
-
     let ffmpeg = null;
     let selectedFile = null;
     let currentObjectUrl = null;
@@ -163,22 +158,17 @@
       }
     }
 
-    async function toBlobURL(url, mimeType) {
-      const response = await fetch(url);
-      if (!response.ok) {
-        throw new Error(`Fetch failed (${response.status} ${response.statusText}): ${url}`);
-      }
-      const data = await response.blob();
-      return URL.createObjectURL(new Blob([data], { type: mimeType }));
-    }
-
     async function loadFFmpeg() {
       if (ffmpeg?.loaded) return;
 
       ffmpeg = new FFmpegWASM.FFmpeg();
 
       ffmpeg.on('progress', ({ progress }) => {
-        const percent = Math.max(0, Math.min(Math.round(progress * 100), 100));
+        const percent = Math.max(
+          0,
+          Math.min(Math.round(progress * 100), 100)
+        );
+
         if (!Number.isNaN(percent)) {
           progressPercent.textContent = `${percent}%`;
           progressBar.style.width = `${percent}%`;
@@ -189,15 +179,13 @@
         console.log('[FFmpeg]', message);
       });
 
-      const coreBaseURL = 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/umd';
-      const ffmpegBaseURL = 'https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/umd';
-
       statusText.textContent = 'エンジンを読み込み中...';
 
+      // 同一オリジンの /ffmpeg フォルダから読み込むことでCORS/Workerエラーを完全回避
       await ffmpeg.load({
-        classWorkerURL: await toBlobURL(`${ffmpegBaseURL}/814.ffmpeg.js`, 'text/javascript'),
-        coreURL: await toBlobURL(`${coreBaseURL}/ffmpeg-core.js`, 'text/javascript'),
-        wasmURL: await toBlobURL(`${coreBaseURL}/ffmpeg-core.wasm`, 'application/wasm')
+        classWorkerURL: './ffmpeg/814.ffmpeg.js',
+        coreURL: './ffmpeg/ffmpeg-core.js',
+        wasmURL: './ffmpeg/ffmpeg-core.wasm'
       });
     }
 
@@ -218,13 +206,16 @@
       try {
         await loadFFmpeg();
 
-        statusText.textContent = 'メモリにファイルを展開中...';
+        statusText.textContent = 'ファイルを展開中...';
+        
+        // v0.12系 API
         const inputData = new Uint8Array(await selectedFile.arrayBuffer());
         await ffmpeg.writeFile(inputName, inputData);
 
         statusText.textContent = '圧縮処理を実行中...';
         
         const args = ['-i', inputName];
+        
         const res = resolutionSelect.value;
         if (res !== 'original') {
           args.push('-vf', `scale=-2:${res}`);
@@ -238,9 +229,12 @@
           outputName
         );
 
+        // v0.12系 API
         await ffmpeg.exec(args);
 
         statusText.textContent = '結果を生成中...';
+        
+        // v0.12系 API
         const data = await ffmpeg.readFile(outputName);
         
         const blob = new Blob([data.buffer], { type: 'video/mp4' });
@@ -265,6 +259,7 @@
         alert(`圧縮中にエラーが発生しました。\n詳細: ${error.message || error}`);
         statusText.textContent = 'エラーが発生しました';
       } finally {
+        // v0.12系 API
         try { await ffmpeg.deleteFile(inputName); } catch (e) {}
         try { await ffmpeg.deleteFile(outputName); } catch (e) {}
         
