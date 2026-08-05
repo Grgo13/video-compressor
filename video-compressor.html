@@ -10,7 +10,6 @@
 
   <main class="w-full max-w-xl bg-zinc-900 border border-zinc-800 rounded-2xl p-6 shadow-2xl space-y-6">
     
-    <!-- ヘッダー -->
     <header class="text-center space-y-1">
       <h1 class="text-2xl font-semibold tracking-tight text-zinc-100">動画圧縮ツール</h1>
       <p class="text-xs text-zinc-400">端末内（ブラウザ）で安全に処理されます。サーバーへのファイル送信はありません。</p>
@@ -90,8 +89,8 @@
 
   </main>
 
-  <!-- 最も安定している v0.11.6 を読み込み -->
-  <script src="https://unpkg.com/@ffmpeg/ffmpeg@0.11.6/dist/ffmpeg.min.js"></script>
+  <!-- 全ての問題を回避できる安定版（v0.10.1）を直接読み込み -->
+  <script src="https://unpkg.com/@ffmpeg/ffmpeg@0.10.1/dist/ffmpeg.min.js"></script>
 
   <script>
     const { createFFmpeg, fetchFile } = FFmpeg;
@@ -163,10 +162,10 @@
     async function loadFFmpeg() {
       if (ffmpeg && ffmpeg.isLoaded()) return;
 
-      // GitHub Pagesの制限を回避するため、シングルスレッド版 (core-st@0.11.1) を確実に指定
+      // GitHub Pages等で確実に動く v0.10.0 のシングルスレッドコアを明示指定
       ffmpeg = createFFmpeg({
         log: true,
-        corePath: 'https://unpkg.com/@ffmpeg/core-st@0.11.1/dist/ffmpeg-core.js'
+        corePath: 'https://unpkg.com/@ffmpeg/core@0.10.0/dist/ffmpeg-core.js'
       });
 
       ffmpeg.setProgress(({ ratio }) => {
@@ -177,7 +176,7 @@
         }
       });
 
-      statusText.textContent = 'エンジンを読み込み中...';
+      statusText.textContent = '初期化エンジンをダウンロード中...';
       await ffmpeg.load();
     }
 
@@ -198,10 +197,10 @@
       try {
         await loadFFmpeg();
 
-        statusText.textContent = 'ファイルを展開中...';
+        statusText.textContent = 'メモリにファイルを展開中...';
         ffmpeg.FS('writeFile', inputName, await fetchFile(selectedFile));
 
-        statusText.textContent = '圧縮処理を実行中...';
+        statusText.textContent = 'エンコード処理中...';
         
         const args = ['-i', inputName];
         
@@ -220,7 +219,7 @@
 
         await ffmpeg.run(...args);
 
-        statusText.textContent = '結果を生成中...';
+        statusText.textContent = 'ファイルの生成中...';
         const data = ffmpeg.FS('readFile', outputName);
         
         const blob = new Blob([data.buffer], { type: 'video/mp4' });
@@ -241,7 +240,7 @@
         statusText.textContent = '処理が完了しました';
 
       } catch (error) {
-        console.error('エラー詳細:', error);
+        console.error('Compression Error:', error);
         alert(`圧縮中にエラーが発生しました。\n詳細: ${error.message || error}`);
         statusText.textContent = 'エラーが発生しました';
       } finally {
