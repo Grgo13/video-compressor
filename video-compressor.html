@@ -89,11 +89,15 @@
 
   </main>
 
-  <!-- 全ての問題を回避できる安定版（v0.10.1）を直接読み込み -->
-  <script src="https://unpkg.com/@ffmpeg/ffmpeg@0.10.1/dist/ffmpeg.min.js"></script>
+  <!-- ご指定の v0.12.10 UMD を読み込み -->
+  <script src="https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/umd/ffmpeg.js"></script>
 
   <script>
-    const { createFFmpeg, fetchFile } = FFmpeg;
+    // GitHub Pages環境での SharedArrayBuffer is not defined エラーを回避するポリフィル
+    if (typeof SharedArrayBuffer === 'undefined') {
+      window.SharedArrayBuffer = window.ArrayBuffer;
+    }
+
     let ffmpeg = null;
     let selectedFile = null;
     let currentObjectUrl = null;
@@ -159,25 +163,42 @@
       }
     }
 
+    async function toBlobURL(url, mimeType) {
+      const response = await fetch(url);
+      if (!response.ok) {
+        throw new Error(`Fetch failed (${response.status} ${response.statusText}): ${url}`);
+      }
+      const data = await response.blob();
+      return URL.createObjectURL(new Blob([data], { type: mimeType }));
+    }
+
     async function loadFFmpeg() {
-      if (ffmpeg && ffmpeg.isLoaded()) return;
+      if (ffmpeg?.loaded) return;
 
-      // GitHub Pages等で確実に動く v0.10.0 のシングルスレッドコアを明示指定
-      ffmpeg = createFFmpeg({
-        log: true,
-        corePath: 'https://unpkg.com/@ffmpeg/core@0.10.0/dist/ffmpeg-core.js'
-      });
+      ffmpeg = new FFmpegWASM.FFmpeg();
 
-      ffmpeg.setProgress(({ ratio }) => {
-        const percent = Math.max(0, Math.min(Math.round(ratio * 100), 100));
-        if (!isNaN(percent)) {
+      ffmpeg.on('progress', ({ progress }) => {
+        const percent = Math.max(0, Math.min(Math.round(progress * 100), 100));
+        if (!Number.isNaN(percent)) {
           progressPercent.textContent = `${percent}%`;
           progressBar.style.width = `${percent}%`;
         }
       });
 
-      statusText.textContent = '初期化エンジンをダウンロード中...';
-      await ffmpeg.load();
+      ffmpeg.on('log', ({ message }) => {
+        console.log('[FFmpeg]', message);
+      });
+
+      const coreBaseURL = 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/umd';
+      const ffmpegBaseURL = 'https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/umd';
+
+      statusText.textContent = 'エンジンを読み込み中...';
+
+      await ffmpeg.load({
+        classWorkerURL: await toBlobURL(`${ffmpegBaseURL}/814.ffmpeg.js`, 'text/javascript'),
+        coreURL: await toBlobURL(`${coreBaseURL}/ffmpeg-core.js`, 'text/javascript'),
+        wasmURL: await toBlobURL(`${coreBaseURL}/ffmpeg-core.wasm`, 'application/wasm')
+      });
     }
 
     compressBtn.addEventListener('click', async () => {
@@ -198,12 +219,12 @@
         await loadFFmpeg();
 
         statusText.textContent = 'メモリにファイルを展開中...';
-        ffmpeg.FS('writeFile', inputName, await fetchFile(selectedFile));
+        const inputData = new Uint8Array(await selectedFile.arrayBuffer());
+        await ffmpeg.writeFile(inputName, inputData);
 
-        statusText.textContent = 'エンコード処理中...';
+        statusText.textContent = '圧縮処理を実行中...';
         
         const args = ['-i', inputName];
-        
         const res = resolutionSelect.value;
         if (res !== 'original') {
           args.push('-vf', `scale=-2:${res}`);
@@ -217,10 +238,10 @@
           outputName
         );
 
-        await ffmpeg.run(...args);
+        await ffmpeg.exec(args);
 
-        statusText.textContent = 'ファイルの生成中...';
-        const data = ffmpeg.FS('readFile', outputName);
+        statusText.textContent = '結果を生成中...';
+        const data = await ffmpeg.readFile(outputName);
         
         const blob = new Blob([data.buffer], { type: 'video/mp4' });
         currentObjectUrl = URL.createObjectURL(blob);
@@ -240,12 +261,12 @@
         statusText.textContent = '処理が完了しました';
 
       } catch (error) {
-        console.error('Compression Error:', error);
+        console.error('エラー詳細:', error);
         alert(`圧縮中にエラーが発生しました。\n詳細: ${error.message || error}`);
         statusText.textContent = 'エラーが発生しました';
       } finally {
-        try { ffmpeg.FS('unlink', inputName); } catch (e) {}
-        try { ffmpeg.FS('unlink', outputName); } catch (e) {}
+        try { await ffmpeg.deleteFile(inputName); } catch (e) {}
+        try { await ffmpeg.deleteFile(outputName); } catch (e) {}
         
         compressBtn.disabled = false;
         compressBtn.classList.remove('opacity-50', 'pointer-events-none');
