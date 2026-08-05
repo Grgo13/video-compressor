@@ -120,10 +120,11 @@
 
   </main>
 
-  <!-- FFmpeg 0.12 UMD Bundle -->
-  <script src="https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/umd/ffmpeg.js"></script>
+  <!-- 安定動作する FFmpeg 0.11.x CDN -->
+  <script src="https://unpkg.com/@ffmpeg/ffmpeg@0.11.6/dist/ffmpeg.min.js"></script>
 
   <script>
+    const { createFFmpeg, fetchFile } = FFmpeg;
     let ffmpeg = null;
     let selectedFile = null;
 
@@ -190,46 +191,24 @@
       progressSection.classList.add('hidden');
     }
 
-    async function fetchToBlobURL(url, mimeType) {
-      const response = await fetch(url);
-      if (!response.ok) {
-        throw new Error(`リソースの取得に失敗しました (HTTP ${response.status}: ${url})`);
-      }
-      const blob = await response.blob();
-      return URL.createObjectURL(new Blob([blob], { type: mimeType }));
-    }
-
     async function loadFFmpeg() {
-      if (ffmpeg) return;
-      
-      if (typeof FFmpegWASM === 'undefined') {
-        throw new Error('FFmpegライブラリの読み込みに失敗しました。');
-      }
+      if (ffmpeg && ffmpeg.isLoaded()) return;
 
-      const { FFmpeg } = FFmpegWASM;
-      ffmpeg = new FFmpeg();
+      ffmpeg = createFFmpeg({
+        log: false,
+        corePath: 'https://unpkg.com/@ffmpeg/core@0.11.0/dist/ffmpeg-core.js'
+      });
 
-      ffmpeg.on('progress', ({ progress }) => {
-        const percent = Math.min(Math.round(progress * 100), 100);
-        progressPercent.textContent = `${percent}%`;
-        progressBar.style.width = `${percent}%`;
+      ffmpeg.setProgress(({ ratio }) => {
+        const percent = Math.min(Math.round(ratio * 100), 100);
+        if (!isNaN(percent) && percent >= 0) {
+          progressPercent.textContent = `${percent}%`;
+          progressBar.style.width = `${percent}%`;
+        }
       });
 
       statusText.textContent = '圧縮エンジンを準備中...';
-
-      // jsDelivr CDN からリソースを取得（CORS問題の防止）
-      const coreBase = 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd';
-      const ffmpegBase = 'https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/umd';
-
-      const coreURL = await fetchToBlobURL(`${coreBase}/ffmpeg-core.js`, 'text/javascript');
-      const wasmURL = await fetchToBlobURL(`${coreBase}/ffmpeg-core.wasm`, 'application/wasm');
-      const classWorkerURL = await fetchToBlobURL(`${ffmpegBase}/814.ffmpeg.js`, 'text/javascript');
-
-      await ffmpeg.load({
-        coreURL,
-        wasmURL,
-        classWorkerURL
-      });
+      await ffmpeg.load();
     }
 
     compressBtn.addEventListener('click', async () => {
@@ -249,8 +228,7 @@
         const inputName = 'input_video';
         const outputName = 'output_video.mp4';
 
-        const arrayBuffer = await selectedFile.arrayBuffer();
-        await ffmpeg.writeFile(inputName, new Uint8Array(arrayBuffer));
+        ffmpeg.FS('writeFile', inputName, await fetchFile(selectedFile));
 
         statusText.textContent = '圧縮中...';
         
@@ -269,10 +247,10 @@
           outputName
         );
 
-        await ffmpeg.exec(args);
+        await ffmpeg.run(...args);
 
         statusText.textContent = '出力を生成中...';
-        const data = await ffmpeg.readFile(outputName);
+        const data = ffmpeg.FS('readFile', outputName);
         const blob = new Blob([data.buffer], { type: 'video/mp4' });
         const url = URL.createObjectURL(blob);
 
@@ -286,8 +264,8 @@
         resultSection.classList.remove('hidden');
         statusText.textContent = '完了';
 
-        await ffmpeg.deleteFile(inputName);
-        await ffmpeg.deleteFile(outputName);
+        ffmpeg.FS('unlink', inputName);
+        ffmpeg.FS('unlink', outputName);
 
       } catch (error) {
         console.error(error);
