@@ -9,15 +9,18 @@
 <body class="bg-zinc-950 text-zinc-100 min-h-screen flex flex-col items-center justify-center p-4 selection:bg-zinc-800 selection:text-zinc-100">
 
   <main class="w-full max-w-xl bg-zinc-900 border border-zinc-800 rounded-2xl p-6 shadow-2xl space-y-6">
-    
+
     <header class="text-center space-y-1">
       <h1 class="text-2xl font-semibold tracking-tight text-zinc-100">動画圧縮ツール</h1>
       <p class="text-xs text-zinc-400">端末内（ブラウザ）で安全に処理されます。サーバーへのファイル送信はありません。</p>
     </header>
 
+    <!-- 環境エラー（file:// など） -->
+    <div id="env-warning" class="hidden text-xs bg-red-950/60 border border-red-900 text-red-200 rounded-lg p-3 leading-relaxed whitespace-pre-wrap"></div>
+
     <!-- ドラッグ＆ドロップエリア -->
-    <section 
-      id="drop-zone" 
+    <section
+      id="drop-zone"
       class="border-2 border-dashed border-zinc-700 hover:border-zinc-400 bg-zinc-900/50 hover:bg-zinc-800/50 transition-all rounded-xl p-8 text-center cursor-pointer flex flex-col items-center justify-center space-y-3"
     >
       <svg class="w-10 h-10 text-zinc-400 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -37,6 +40,8 @@
         <span id="file-info" class="font-mono text-zinc-200 truncate max-w-[280px]"></span>
       </div>
 
+      <div id="size-warning" class="hidden text-[11px] bg-amber-950/50 border border-amber-900/70 text-amber-200 rounded-lg p-2.5 leading-relaxed"></div>
+
       <div class="space-y-1.5">
         <label for="resolution-select" class="block text-xs font-medium text-zinc-300">解像度（サイズ変更）</label>
         <select id="resolution-select" class="w-full bg-zinc-950 border border-zinc-800 text-zinc-200 text-xs rounded-lg p-2.5 focus:outline-none focus:border-zinc-500">
@@ -45,6 +50,7 @@
           <option value="720">HD (720p に縮小)</option>
           <option value="480">SD (480p に縮小)</option>
         </select>
+        <p id="scale-hint" class="text-[10px] text-zinc-500 font-mono"></p>
       </div>
 
       <div class="space-y-2">
@@ -66,13 +72,20 @@
 
     <!-- プログレス表示 -->
     <section id="progress-section" class="hidden space-y-2 border-t border-zinc-800 pt-5">
-      <div class="flex justify-between text-xs">
-        <span id="status-text" class="text-zinc-400 font-medium">圧縮中...</span>
-        <span id="progress-percent" class="font-mono text-zinc-200 font-semibold">0%</span>
+      <div class="flex justify-between text-xs gap-3">
+        <span id="status-text" class="text-zinc-400 font-medium">準備中...</span>
+        <span id="progress-percent" class="font-mono text-zinc-200 font-semibold shrink-0">0%</span>
       </div>
       <div class="w-full bg-zinc-800 h-2 rounded-full overflow-hidden">
         <div id="progress-bar" class="bg-zinc-100 h-2 rounded-full w-0 transition-all duration-200"></div>
       </div>
+    </section>
+
+    <!-- エラー表示 -->
+    <section id="error-section" class="hidden space-y-2 border-t border-zinc-800 pt-5">
+      <p class="text-xs font-semibold text-red-300">エラーが発生しました</p>
+      <pre id="error-detail" class="text-[10px] font-mono text-red-200 bg-red-950/40 border border-red-900/60 rounded-lg p-3 whitespace-pre-wrap break-all max-h-40 overflow-auto"></pre>
+      <p class="text-[10px] text-zinc-500">ブラウザの開発者ツール（Console）にも詳細ログが出力されています。</p>
     </section>
 
     <!-- 結果表示 -->
@@ -89,203 +102,496 @@
 
   </main>
 
+  <!--
+    重要: このスクリプトと同じディレクトリに 814.ffmpeg.js を必ず置くこと。
+    ffmpeg.js は document.currentScript.src から publicPath を自動導出し、
+    "<このディレクトリ>/814.ffmpeg.js" を classic Worker として自分で読み込む。
+    classWorkerURL は絶対に渡さないこと。渡すと Worker が type:"module" で生成され、
+    UMD 版ワーカーが使う importScripts() が使えず
+    "failed to import ffmpeg-core.js" で必ず失敗する。
+  -->
   <script src="./ffmpeg/ffmpeg.js"></script>
 
   <script>
+    'use strict';
+
     let ffmpeg = null;
     let selectedFile = null;
     let currentObjectUrl = null;
+    let sourceMeta = null;   // { width, height, duration } または null
+    let mediaDuration = 0;   // 進捗フォールバック用の尺（秒）
+    let dragDepth = 0;
 
-    const dropZone = document.getElementById('drop-zone');
-    const fileInput = document.getElementById('file-input');
-    const settingsSection = document.getElementById('settings-section');
-    const fileInfo = document.getElementById('file-info');
-    const resolutionSelect = document.getElementById('resolution-select');
-    const crfSlider = document.getElementById('crf-slider');
-    const crfValue = document.getElementById('crf-value');
-    const compressBtn = document.getElementById('compress-btn');
-    const progressSection = document.getElementById('progress-section');
-    const statusText = document.getElementById('status-text');
-    const progressPercent = document.getElementById('progress-percent');
-    const progressBar = document.getElementById('progress-bar');
-    const resultSection = document.getElementById('result-section');
-    const resultSize = document.getElementById('result-size');
-    const outputVideo = document.getElementById('output-video');
-    const downloadBtn = document.getElementById('download-btn');
+    const $ = (id) => document.getElementById(id);
+
+    const dropZone         = $('drop-zone');
+    const fileInput        = $('file-input');
+    const envWarning       = $('env-warning');
+    const settingsSection  = $('settings-section');
+    const fileInfo         = $('file-info');
+    const sizeWarning      = $('size-warning');
+    const resolutionSelect = $('resolution-select');
+    const scaleHint        = $('scale-hint');
+    const crfSlider        = $('crf-slider');
+    const crfValue         = $('crf-value');
+    const compressBtn      = $('compress-btn');
+    const progressSection  = $('progress-section');
+    const statusText       = $('status-text');
+    const progressPercent  = $('progress-percent');
+    const progressBar      = $('progress-bar');
+    const errorSection     = $('error-section');
+    const errorDetail      = $('error-detail');
+    const resultSection    = $('result-section');
+    const resultSize       = $('result-size');
+    const outputVideo      = $('output-video');
+    const downloadBtn      = $('download-btn');
+
+    /* ---------- 環境チェック ---------- */
+
+    (function checkEnvironment() {
+      const problems = [];
+
+      if (location.protocol === 'file:') {
+        problems.push(
+          'このページが file:// で開かれています。ffmpeg.wasm は Web Worker と fetch を使うため、' +
+          'file:// では動作しません。ローカルで試す場合は簡易サーバーを起動してください（例: python -m http.server 8000）。'
+        );
+      }
+      if (typeof FFmpegWASM === 'undefined' || !FFmpegWASM.FFmpeg) {
+        problems.push(
+          './ffmpeg/ffmpeg.js の読み込みに失敗しました（グローバル FFmpegWASM が未定義）。' +
+          'パスが正しいか、@ffmpeg/ffmpeg の dist/umd/ffmpeg.js を配置しているか確認してください。'
+        );
+      }
+      if (typeof Worker === 'undefined') {
+        problems.push('このブラウザは Web Worker に対応していません。');
+      }
+
+      if (problems.length > 0) {
+        envWarning.textContent = problems.join('\n\n');
+        envWarning.classList.remove('hidden');
+        dropZone.classList.add('opacity-40', 'pointer-events-none');
+      }
+    })();
+
+    /* ---------- UI ---------- */
 
     crfSlider.addEventListener('input', (e) => {
-      const val = e.target.value;
-      crfValue.textContent = `CRF ${val} ${val == 28 ? '(標準)' : ''}`;
+      const val = Number(e.target.value);
+      let label = '';
+      if (val <= 20)       label = '(高画質)';
+      else if (val === 28) label = '(標準)';
+      else if (val >= 34)  label = '(高圧縮)';
+      crfValue.textContent = `CRF ${val} ${label}`.trim();
     });
 
+    resolutionSelect.addEventListener('change', updateScaleHint);
+
     dropZone.addEventListener('click', () => fileInput.click());
-    
-    ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
-      dropZone.addEventListener(eventName, e => {
+
+    ['dragenter', 'dragover', 'dragleave', 'drop'].forEach((name) => {
+      dropZone.addEventListener(name, (e) => {
         e.preventDefault();
         e.stopPropagation();
       }, false);
     });
 
-    dropZone.addEventListener('dragover', () => dropZone.classList.add('border-zinc-400', 'bg-zinc-800/80'));
-    dropZone.addEventListener('dragleave', () => dropZone.classList.remove('border-zinc-400', 'bg-zinc-800/80'));
-    
+    // 子要素をまたぐと dragleave が誤発火するのでカウンタで管理する
+    dropZone.addEventListener('dragenter', () => {
+      dragDepth += 1;
+      dropZone.classList.add('border-zinc-400', 'bg-zinc-800/80');
+    });
+    dropZone.addEventListener('dragleave', () => {
+      dragDepth = Math.max(0, dragDepth - 1);
+      if (dragDepth === 0) {
+        dropZone.classList.remove('border-zinc-400', 'bg-zinc-800/80');
+      }
+    });
     dropZone.addEventListener('drop', (e) => {
+      dragDepth = 0;
       dropZone.classList.remove('border-zinc-400', 'bg-zinc-800/80');
-      if (e.dataTransfer?.files?.length > 0) handleFileSelect(e.dataTransfer.files[0]);
+      const f = e.dataTransfer && e.dataTransfer.files;
+      if (f && f.length > 0) handleFileSelect(f[0]);
     });
 
     fileInput.addEventListener('change', (e) => {
-      if (e.target.files?.length > 0) handleFileSelect(e.target.files[0]);
+      if (e.target.files && e.target.files.length > 0) handleFileSelect(e.target.files[0]);
+      // 同じファイルを選び直せるようにリセット
+      e.target.value = '';
     });
 
-    function handleFileSelect(file) {
-      if (!file.type.startsWith('video/')) {
+    /* ---------- ファイル選択 ---------- */
+
+    async function handleFileSelect(file) {
+      // 拡張子だけの動画（mkv など）は type が空になることがあるので緩めに判定する
+      const looksVideo = file.type.startsWith('video/') ||
+                         /\.(mp4|mov|m4v|webm|mkv|avi|wmv|flv|mpg|mpeg|ts|3gp)$/i.test(file.name);
+      if (!looksVideo) {
         alert('動画ファイルを選択してください。');
         return;
       }
+
       selectedFile = file;
-      fileInfo.textContent = `${file.name} (${(file.size / (1024 * 1024)).toFixed(2)} MB)`;
-      
+      fileInfo.textContent = `${file.name} (${fmtMB(file.size)} MB)`;
+
       settingsSection.classList.remove('hidden');
       resultSection.classList.add('hidden');
       progressSection.classList.add('hidden');
-      
-      if (currentObjectUrl) {
-        URL.revokeObjectURL(currentObjectUrl);
-        currentObjectUrl = null;
+      errorSection.classList.add('hidden');
+
+      releaseObjectUrl();
+
+      // ffmpeg.wasm は 32bit wasm のためメモリ上限が厳しい
+      const MB = file.size / (1024 * 1024);
+      if (MB > 300) {
+        sizeWarning.textContent =
+          `ファイルサイズが大きいため（${fmtMB(file.size)} MB）、` +
+          'ブラウザのメモリ不足で失敗する可能性があります。' +
+          '失敗する場合は事前に分割するか、解像度を下げて試してください。';
+        sizeWarning.classList.remove('hidden');
+      } else {
+        sizeWarning.classList.add('hidden');
+      }
+
+      sourceMeta = await probeWithVideoElement(file);
+      mediaDuration = (sourceMeta && sourceMeta.duration) ? sourceMeta.duration : 0;
+      updateScaleHint();
+    }
+
+    // ブラウザのデコーダで解像度と尺を読む。読めなければ null（ffmpeg 側の式にフォールバック）
+    function probeWithVideoElement(file) {
+      return new Promise((resolve) => {
+        const url = URL.createObjectURL(file);
+        const v = document.createElement('video');
+        let settled = false;
+
+        const done = (result) => {
+          if (settled) return;
+          settled = true;
+          v.removeAttribute('src');
+          v.load();
+          URL.revokeObjectURL(url);
+          resolve(result);
+        };
+
+        v.preload = 'metadata';
+        v.muted = true;
+        v.addEventListener('loadedmetadata', () => {
+          if (v.videoWidth > 0 && v.videoHeight > 0) {
+            done({
+              width: v.videoWidth,
+              height: v.videoHeight,
+              duration: Number.isFinite(v.duration) ? v.duration : 0
+            });
+          } else {
+            done(null);
+          }
+        });
+        v.addEventListener('error', () => done(null));
+        setTimeout(() => done(null), 8000);
+        v.src = url;
+      });
+    }
+
+    // 短辺を target に合わせて縮小する（拡大はしない）。偶数に丸める
+    function computeScaleSize(w, h, target) {
+      const shortSide = Math.min(w, h);
+      if (shortSide <= target) return null; // 既に十分小さいので何もしない
+      const ratio = target / shortSide;
+      const even = (n) => Math.max(2, Math.round(n * ratio / 2) * 2);
+      return { w: even(w), h: even(h) };
+    }
+
+    function updateScaleHint() {
+      const target = resolutionSelect.value;
+      if (!selectedFile) { scaleHint.textContent = ''; return; }
+
+      if (target === 'original') {
+        scaleHint.textContent = sourceMeta
+          ? `元のサイズ: ${sourceMeta.width}x${sourceMeta.height}（変更しません）`
+          : '解像度は変更しません';
+        return;
+      }
+
+      if (!sourceMeta) {
+        scaleHint.textContent = `短辺を ${target}px 以下に縮小します`;
+        return;
+      }
+
+      const size = computeScaleSize(sourceMeta.width, sourceMeta.height, Number(target));
+      scaleHint.textContent = size
+        ? `${sourceMeta.width}x${sourceMeta.height} → ${size.w}x${size.h}`
+        : `元のサイズ (${sourceMeta.width}x${sourceMeta.height}) は既に ${target}p 以下のため縮小しません`;
+    }
+
+    /* ---------- ffmpeg 読み込み ---------- */
+
+    function baseUrl() {
+      const href = location.href.split('?')[0].split('#')[0];
+      return href.substring(0, href.lastIndexOf('/') + 1);
+    }
+
+    // HEAD を拒否するホストがあるので、失敗したら Range 付き GET で再確認する
+    async function probeUrl(url) {
+      try {
+        const head = await fetch(url, { method: 'HEAD', cache: 'no-store' });
+        if (head.ok) return { ok: true, type: head.headers.get('content-type') || '' };
+        if (head.status !== 405 && head.status !== 501) {
+          return { ok: false, reason: `HTTP ${head.status}` };
+        }
+      } catch (e) {
+        // ネットワーク層の失敗は GET で再確認する
+      }
+      try {
+        const res = await fetch(url, { headers: { Range: 'bytes=0-511' }, cache: 'no-store' });
+        if (!res.ok && res.status !== 206) return { ok: false, reason: `HTTP ${res.status}` };
+        const head = await res.text();
+        return { ok: true, type: res.headers.get('content-type') || '', head };
+      } catch (e) {
+        return { ok: false, reason: e.message };
+      }
+    }
+
+    async function preflight(coreURL, wasmURL) {
+      const workerURL = baseUrl() + 'ffmpeg/814.ffmpeg.js';
+      const targets = [
+        ['ワーカー', workerURL],
+        ['コア(js)', coreURL],
+        ['コア(wasm)', wasmURL]
+      ];
+
+      const missing = [];
+      let coreHead = '';
+
+      for (const [label, url] of targets) {
+        const r = await probeUrl(url);
+        console.log('[preflight]', label, url, r);
+        if (!r.ok) {
+          missing.push(`${label}: ${url}\n  → ${r.reason}`);
+          continue;
+        }
+        // 404 を HTML で返すホスト対策
+        if (label !== 'コア(wasm)' && r.head && /^\s*<(!doctype|html)/i.test(r.head)) {
+          missing.push(`${label}: ${url}\n  → JavaScript ではなく HTML が返されました（パス誤り or 404 フォールバック）`);
+        }
+        if (label === 'コア(js)' && r.head) coreHead = r.head;
+      }
+
+      if (missing.length > 0) {
+        throw new Error(
+          '必要なファイルを取得できません:\n\n' + missing.join('\n\n') +
+          '\n\n配置を確認してください:\n' +
+          '  ffmpeg/ffmpeg.js          (@ffmpeg/ffmpeg dist/umd)\n' +
+          '  ffmpeg/814.ffmpeg.js      (@ffmpeg/ffmpeg dist/umd)\n' +
+          '  ffmpeg/ffmpeg-core.js     (@ffmpeg/core   dist/umd)\n' +
+          '  ffmpeg/ffmpeg-core.wasm   (@ffmpeg/core   dist/umd)'
+        );
+      }
+
+      // UMD ワーカーは importScripts でコアを読むため、ESM 版の core を置くと必ず失敗する
+      if (coreHead && /^\s*(import|export)\s/m.test(coreHead)) {
+        throw new Error(
+          'ffmpeg-core.js が ESM 版のようです。\n' +
+          'UMD 構成では dist/umd/ffmpeg-core.js を使ってください（dist/esm/ は不可）。'
+        );
       }
     }
 
     async function loadFFmpeg() {
-      if (ffmpeg?.loaded) return;
+      if (ffmpeg && ffmpeg.loaded) return;
 
-      ffmpeg = new FFmpegWASM.FFmpeg();
+      const base = baseUrl();
+      const coreURL = base + 'ffmpeg/ffmpeg-core.js';
+      const wasmURL = base + 'ffmpeg/ffmpeg-core.wasm';
 
-      ffmpeg.on('progress', ({ progress }) => {
-        const percent = Math.max(
-          0,
-          Math.min(Math.round(progress * 100), 100)
-        );
-
-        if (!Number.isNaN(percent)) {
-          progressPercent.textContent = `${percent}%`;
-          progressBar.style.width = `${percent}%`;
-        }
-      });
-
-      ffmpeg.on('log', ({ message }) => {
-        console.log('[FFmpeg]', message);
-      });
-
-      statusText.textContent = 'ファイルのパスを解決中...';
-
-      let basePath = window.location.href.split('?')[0].split('#')[0];
-      basePath = basePath.substring(0, basePath.lastIndexOf('/') + 1);
-
-      const classWorkerURL = basePath + 'ffmpeg/814.ffmpeg.js';
-      const coreURL = basePath + 'ffmpeg/ffmpeg-core.js';
-      const wasmURL = basePath + 'ffmpeg/ffmpeg-core.wasm';
-
-      console.log('--- 読み込みURL確認 ---', { classWorkerURL, coreURL, wasmURL });
+      console.log('--- 読み込みURL確認 ---', { coreURL, wasmURL });
 
       statusText.textContent = 'ファイルの存在を確認中...';
+      await preflight(coreURL, wasmURL);
+
+      const instance = new FFmpegWASM.FFmpeg();
+
+      instance.on('progress', ({ progress }) => {
+        if (typeof progress !== 'number' || Number.isNaN(progress)) return;
+        setProgress(progress * 100);
+      });
+
+      instance.on('log', ({ message }) => {
+        console.log('[FFmpeg]', message);
+        handleLogForProgress(message);
+      });
+
+      statusText.textContent = 'エンジンを読み込み中... (約30MB。初回は時間がかかります)';
 
       try {
-        for (const url of [classWorkerURL, coreURL, wasmURL]) {
-          const res = await fetch(url, { method: 'HEAD' });
-          if (!res.ok) {
-            throw new Error(`ファイルが見つかりません (HTTP ${res.status}): \n${url}`);
-          }
-        }
+        // classWorkerURL は渡さない。
+        // 渡すと Worker が type:"module" になり、UMD ワーカーの importScripts が
+        // 使えず "failed to import ffmpeg-core.js" で必ず失敗する。
+        await instance.load({ coreURL, wasmURL });
       } catch (e) {
-        throw new Error(`事前チェック失敗: ${e.message}\n\nGitHub Pagesにファイルが正しく配置されているか確認してください。`);
+        try { instance.terminate(); } catch (_) {}
+        throw new Error(
+          'エンジンの初期化に失敗しました。\n' + (e && e.message ? e.message : String(e))
+        );
       }
 
-      statusText.textContent = 'エンジンを読み込み中... (約30MB。初回は数分かかる場合があります)';
-
-      await ffmpeg.load({
-        classWorkerURL,
-        coreURL,
-        wasmURL
-      });
+      ffmpeg = instance;
     }
+
+    /* ---------- 進捗 ---------- */
+
+    function setProgress(percent) {
+      const p = Math.max(0, Math.min(Math.round(percent), 100));
+      progressPercent.textContent = `${p}%`;
+      progressBar.style.width = `${p}%`;
+    }
+
+    // progress イベントが飛ばないケースがあるので、ログの time= から補完する
+    function handleLogForProgress(message) {
+      if (!mediaDuration) {
+        const d = /Duration:\s*(\d+):(\d\d):(\d\d(?:\.\d+)?)/.exec(message);
+        if (d) mediaDuration = (+d[1]) * 3600 + (+d[2]) * 60 + parseFloat(d[3]);
+      }
+      if (!mediaDuration) return;
+
+      const t = /time=\s*(\d+):(\d\d):(\d\d(?:\.\d+)?)/.exec(message);
+      if (!t) return;
+      const sec = (+t[1]) * 3600 + (+t[2]) * 60 + parseFloat(t[3]);
+      setProgress((sec / mediaDuration) * 100);
+    }
+
+    /* ---------- 圧縮実行 ---------- */
 
     compressBtn.addEventListener('click', async () => {
       if (!selectedFile) return;
 
-      compressBtn.disabled = true;
-      compressBtn.classList.add('opacity-50', 'pointer-events-none');
-      settingsSection.classList.add('opacity-50', 'pointer-events-none');
-      progressSection.classList.remove('hidden');
-      resultSection.classList.add('hidden');
-      progressBar.style.width = '0%';
-      progressPercent.textContent = '0%';
-
-      const inputName = 'input.mp4';
+      const inputName = 'input.bin';
       const outputName = 'output.mp4';
+
+      setBusy(true);
+      errorSection.classList.add('hidden');
+      resultSection.classList.add('hidden');
+      progressSection.classList.remove('hidden');
+      setProgress(0);
 
       try {
         await loadFFmpeg();
 
         statusText.textContent = 'ファイルを展開中...';
-        
         const inputData = new Uint8Array(await selectedFile.arrayBuffer());
         await ffmpeg.writeFile(inputName, inputData);
 
+        const args = buildArgs(inputName, outputName);
+        console.log('[ffmpeg args]', args);
+
         statusText.textContent = '圧縮処理を実行中...';
-        
-        const args = ['-i', inputName];
-        
-        const res = resolutionSelect.value;
-        if (res !== 'original') {
-          args.push('-vf', `scale=-2:${res}`);
+        const code = await ffmpeg.exec(args);
+        if (code !== 0) {
+          throw new Error(
+            `ffmpeg が終了コード ${code} で失敗しました。` +
+            'Console の [FFmpeg] ログに原因が出力されています。'
+          );
         }
 
-        args.push(
-          '-vcodec', 'libx264',
-          '-crf', crfSlider.value,
-          '-preset', 'ultrafast',
-          '-acodec', 'aac',
-          outputName
-        );
-
-        await ffmpeg.exec(args);
-
         statusText.textContent = '結果を生成中...';
-        
         const data = await ffmpeg.readFile(outputName);
-        
-        const blob = new Blob([data.buffer], { type: 'video/mp4' });
+        if (!data || data.length === 0) {
+          throw new Error('出力ファイルが空でした。');
+        }
+
+        releaseObjectUrl();
+        const blob = new Blob([data], { type: 'video/mp4' });
         currentObjectUrl = URL.createObjectURL(blob);
 
         outputVideo.src = currentObjectUrl;
         downloadBtn.href = currentObjectUrl;
-        
-        const extIndex = selectedFile.name.lastIndexOf('.');
-        const baseName = extIndex !== -1 ? selectedFile.name.substring(0, extIndex) : selectedFile.name;
-        downloadBtn.download = `${baseName}_compressed.mp4`;
-        
-        const newSizeMB = (blob.size / (1024 * 1024)).toFixed(2);
-        const oldSizeMB = (selectedFile.size / (1024 * 1024)).toFixed(2);
-        resultSize.textContent = `${oldSizeMB} MB ➔ ${newSizeMB} MB`;
 
+        const extIndex = selectedFile.name.lastIndexOf('.');
+        const baseName = extIndex > 0 ? selectedFile.name.substring(0, extIndex) : selectedFile.name;
+        downloadBtn.download = `${baseName}_compressed.mp4`;
+
+        const ratio = ((1 - blob.size / selectedFile.size) * 100).toFixed(0);
+        resultSize.textContent =
+          `${fmtMB(selectedFile.size)} MB ➔ ${fmtMB(blob.size)} MB` +
+          (blob.size < selectedFile.size ? ` (-${ratio}%)` : ' (削減されませんでした)');
+
+        setProgress(100);
         resultSection.classList.remove('hidden');
         statusText.textContent = '処理が完了しました';
 
       } catch (error) {
         console.error('エラー詳細:', error);
-        alert(`圧縮中にエラーが発生しました。\n詳細: ${error.message || error}`);
+        errorDetail.textContent = (error && error.message) ? error.message : String(error);
+        errorSection.classList.remove('hidden');
         statusText.textContent = 'エラーが発生しました';
+
+        // 壊れたインスタンスを残すと再試行できないので破棄する
+        if (ffmpeg && !ffmpeg.loaded) {
+          try { ffmpeg.terminate(); } catch (_) {}
+          ffmpeg = null;
+        }
       } finally {
-        try { await ffmpeg.deleteFile(inputName); } catch (e) {}
-        try { await ffmpeg.deleteFile(outputName); } catch (e) {}
-        
-        compressBtn.disabled = false;
-        compressBtn.classList.remove('opacity-50', 'pointer-events-none');
-        settingsSection.classList.remove('opacity-50', 'pointer-events-none');
+        if (ffmpeg && ffmpeg.loaded) {
+          try { await ffmpeg.deleteFile(inputName); } catch (_) {}
+          try { await ffmpeg.deleteFile(outputName); } catch (_) {}
+        }
+        setBusy(false);
       }
     });
+
+    function buildArgs(inputName, outputName) {
+      const args = ['-i', inputName];
+
+      const target = resolutionSelect.value;
+      if (target !== 'original') {
+        const n = Number(target);
+        if (sourceMeta) {
+          const size = computeScaleSize(sourceMeta.width, sourceMeta.height, n);
+          if (size) args.push('-vf', `scale=${size.w}:${size.h}`);
+        } else {
+          // 実寸が取れなかった場合。短辺基準・偶数丸め・縮小のみを ffmpeg の式で行う
+          args.push('-vf', `scale='if(gt(iw,ih),-2,min(${n},trunc(iw/2)*2))':'if(gt(iw,ih),min(${n},trunc(ih/2)*2),-2)'`);
+        }
+      }
+
+      args.push(
+        '-c:v', 'libx264',
+        '-crf', String(crfSlider.value),
+        // ultrafast は圧縮効率が悪く、元より大きくなることがある
+        '-preset', 'veryfast',
+        '-pix_fmt', 'yuv420p',
+        '-c:a', 'aac',
+        '-b:a', '128k',
+        '-movflags', '+faststart',
+        outputName
+      );
+
+      return args;
+    }
+
+    /* ---------- ユーティリティ ---------- */
+
+    function setBusy(busy) {
+      compressBtn.disabled = busy;
+      compressBtn.classList.toggle('opacity-50', busy);
+      compressBtn.classList.toggle('pointer-events-none', busy);
+      settingsSection.classList.toggle('opacity-50', busy);
+      settingsSection.classList.toggle('pointer-events-none', busy);
+      dropZone.classList.toggle('pointer-events-none', busy);
+    }
+
+    function releaseObjectUrl() {
+      if (!currentObjectUrl) return;
+      outputVideo.removeAttribute('src');
+      outputVideo.load();
+      downloadBtn.removeAttribute('href');
+      URL.revokeObjectURL(currentObjectUrl);
+      currentObjectUrl = null;
+    }
+
+    function fmtMB(bytes) {
+      return (bytes / (1024 * 1024)).toFixed(2);
+    }
   </script>
 </body>
 </html>
